@@ -1,0 +1,58 @@
+[
+    {
+        "id": 1,
+        "cmd": "help",
+        "para": "",
+        "func": "help()",
+        "info": "The prog's help"
+    },
+    {
+        "id": 2,
+        "cmd": "echo",
+        "para": "*argv",
+        "func": "echo(*argv)",
+        "info": "echo characters in console"
+    },
+    {
+        "id": 3,
+        "cmd": "exit",
+        "para": "",
+        "func": "exit()",
+        "info": "Exit the program"
+    },
+    {
+        "id": 4,
+        "cmd": "version",
+        "para": "",
+        "func": "version()",
+        "info": "Show the version of the program"
+    },
+    {
+        "id": 5,
+        "cmd": "clear",
+        "para": "",
+        "func": "clear()",
+        "info": "Clear the console"
+    },
+    {
+        "id": 6,
+        "cmd": "ls",
+        "para": "*argv",
+        "func": "ls(*argv)",
+        "info": "List directory contents (similar to Linux ls)"
+    },
+    {
+        "id": 7,
+        "cmd": "test",
+        "para": ["required1", "[optional1]", "required2"],
+        "func": "test_func(required1, optional1=None, required2=None)",
+        "info": "Test command with mixed required and optional parameters"
+    },
+    {
+        "id": 8,
+        "cmd": "copy",
+        "para": ["[source]", "[destination]"],
+        "func": "copy_func(source=None, destination=None)",
+        "info": "Copy file with all optional parameters"
+    }
+]

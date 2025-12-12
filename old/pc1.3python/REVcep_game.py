@@ -1,0 +1,20 @@
+import os
+import time
+
+print("正在加载 0%")
+time.sleep(2)
+os.system("cls")
+print("正在加载 10%")
+time.sleep(0.5)
+os.system("cls")
+print("正在加载 20%")
+time.sleep(1)
+os.system("cls")
+print("正在加载 70%")
+time.sleep(1)
+os.system("cls")
+print("正在加载 90%")
+time.sleep(10)
+os.system("cls")
+print("电路板游戏V1.0")
+os.system("pause")
