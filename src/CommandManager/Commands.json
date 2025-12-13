@@ -54,5 +54,96 @@
         "para": ["[source]", "[destination]"],
         "func": "copy_func(source=None, destination=None)",
         "info": "Copy file with all optional parameters"
+    },
+    {
+        "id": 9,
+        "cmd": "run",
+        "para": "*argv",
+        "func": "run(*argv)",
+        "info": "Run executable files (exe, com, etc.) with PATH support"
+    },
+    {
+        "id": 10,
+        "cmd": "cd",
+        "para": "[directory]",
+        "func": "cd(directory=None)",
+        "info": "Change current working directory"
+    },
+    {
+        "id": 11,
+        "cmd": "cat",
+        "para": "*argv",
+        "func": "cat(*argv)",
+        "info": "Display file contents (similar to Linux cat)"
+    },
+    {
+        "id": 12,
+        "cmd": "mkdir",
+        "para": "*argv",
+        "func": "mkdir(*argv)",
+        "info": "Create directories (similar to Linux mkdir)"
+    },
+    {
+        "id": 13,
+        "cmd": "rm",
+        "para": "*argv",
+        "func": "rm(*argv)",
+        "info": "Remove files or directories (similar to Linux rm)"
+    },
+    {
+        "id": 14,
+        "cmd": "touch",
+        "para": "*argv",
+        "func": "touch(*argv)",
+        "info": "Create empty files or update timestamps (similar to Linux touch)"
+    },
+    {
+        "id": 15,
+        "cmd": "pwd",
+        "para": "",
+        "func": "pwd()",
+        "info": "Print working directory (similar to Linux pwd)"
+    },
+    {
+        "id": 16,
+        "cmd": "whoami",
+        "para": "",
+        "func": "whoami()",
+        "info": "Display current user (similar to Linux whoami)"
+    },
+    {
+        "id": 17,
+        "cmd": "which",
+        "para": "command",
+        "func": "which(command)",
+        "info": "Show command location (similar to Linux which)"
+    },
+    {
+        "id": 18,
+        "cmd": "grep",
+        "para": ["pattern", "file"],
+        "func": "grep(pattern, file)",
+        "info": "Search text patterns (similar to Linux grep)"
+    },
+    {
+        "id": 19,
+        "cmd": "head",
+        "para": ["file", "[lines]"],
+        "func": "head(file, lines=10)",
+        "info": "Display first lines of file (similar to Linux head)"
+    },
+    {
+        "id": 20,
+        "cmd": "tail",
+        "para": ["file", "[lines]"],
+        "func": "tail(file, lines=10)",
+        "info": "Display last lines of file (similar to Linux tail)"
+    },
+    {
+        "id": 21,
+        "cmd": "wc",
+        "para": "*argv",
+        "func": "wc(*argv)",
+        "info": "Count lines, words, and characters (similar to Linux wc)"
     }
 ]

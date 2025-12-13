@@ -2,6 +2,7 @@ import os
 import json
 import re
 import shlex
+import sys
 from ..BasicManager.VersionManager import VersionManager
 from ..BasicManager.ErrorManager import (
     ErrorCodes, error_manager, PythonCMDError,
@@ -299,6 +300,476 @@ class Commands:
             return
         print(f"复制文件: {source} -> {destination}")
 
+    def run(self, *args):
+        """运行可执行文件（支持PATH路径和当前目录）"""
+        import subprocess
+        import platform
+        
+        if not args:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要运行的可执行文件", "run命令需要指定可执行文件路径")
+            return
+        
+        executable = args[0]
+        run_args = list(args[1:]) if len(args) > 1 else []
+        
+        # 定义支持的可执行文件扩展名
+        executable_extensions = ['.exe', '.com', '.bat', '.cmd']
+        if platform.system() != 'Windows':
+            # 在非Windows系统上，也支持无扩展名的可执行文件
+            executable_extensions.append('')
+        
+        # 特殊处理Python脚本
+        python_extensions = ['.py', '.pyw']
+        
+        def find_executable(file_path):
+            """查找可执行文件的完整路径"""
+            # 如果文件已经存在（绝对路径或相对路径）
+            if os.path.exists(file_path):
+                # 检查是否是文件
+                if os.path.isfile(file_path):
+                    # 在Windows上检查扩展名，在非Windows系统上检查执行权限
+                    if platform.system() == 'Windows':
+                        if any(file_path.lower().endswith(ext) for ext in executable_extensions):
+                            return file_path
+                        # 检查Python脚本
+                        if any(file_path.lower().endswith(ext) for ext in python_extensions):
+                            return file_path
+                    else:
+                        # 检查是否有执行权限
+                        if os.access(file_path, os.X_OK):
+                            return file_path
+                        # 检查Python脚本
+                        if any(file_path.lower().endswith(ext) for ext in python_extensions):
+                            return file_path
+                return None
+            
+            # 如果没有扩展名，尝试添加可能的扩展名
+            if platform.system() == 'Windows' and not any(executable.lower().endswith(ext) for ext in executable_extensions + python_extensions):
+                for ext in executable_extensions + python_extensions:
+                    test_path = file_path + ext
+                    if os.path.exists(test_path) and os.path.isfile(test_path):
+                        return test_path
+            
+            return None
+        
+        def find_in_path(file_name):
+            """在PATH环境变量中查找可执行文件"""
+            path_dirs = os.environ.get('PATH', '').split(os.pathsep)
+            
+            for directory in path_dirs:
+                directory = directory.strip('"')  # 移除可能的引号
+                if not directory:
+                    continue
+                
+                # 尝试直接路径
+                full_path = os.path.join(directory, file_name)
+                found_path = find_executable(full_path)
+                if found_path:
+                    return found_path
+                
+                # 如果没有扩展名，尝试添加扩展名
+                if platform.system() == 'Windows' and not any(file_name.lower().endswith(ext) for ext in executable_extensions):
+                    for ext in executable_extensions:
+                        test_path = os.path.join(directory, file_name + ext)
+                        found_path = find_executable(test_path)
+                        if found_path:
+                            return found_path
+            
+            return None
+        
+        # 首先检查是否是相对路径（以./或.\开头）
+        is_relative_path = executable.startswith('./') or executable.startswith('.\\')
+        
+        if is_relative_path:
+            # 相对路径，直接在当前目录查找
+            found_path = find_executable(executable)
+            if not found_path:
+                # 抛出异常，让调用者处理
+                raise PythonCMDError(ErrorCodes.FILE_NOT_FOUND, f"找不到可执行文件: {executable}", "请检查文件路径是否正确")
+        else:
+            # 先在PATH中查找
+            found_path = find_in_path(executable)
+            
+            if not found_path:
+                # 如果PATH中没找到，检查当前目录
+                current_dir_path = find_executable(executable)
+                if current_dir_path:
+                    # 当前目录有，但PATH中没有，且没有使用./前缀，应该报错
+                    raise PythonCMDError(ErrorCodes.COMMAND_EXECUTION_FAILED,
+                                      f"无法执行 '{executable}'",
+                                      f"文件存在于当前目录，但PATH中未找到。请使用 './{executable}' 或 '.\\{executable}' 来执行当前目录的文件")
+                else:
+                    # 完全找不到
+                    raise PythonCMDError(ErrorCodes.FILE_NOT_FOUND, f"找不到可执行文件: {executable}",
+                                         "文件不存在于PATH路径或当前目录中")
+        
+        # 执行可执行文件
+        try:
+            # 检查是否是Python脚本
+            if any(found_path.lower().endswith(ext) for ext in python_extensions):
+                # 使用Python解释器运行Python脚本
+                python_exe = sys.executable  # 获取当前Python解释器路径
+                result = subprocess.run([python_exe, found_path] + run_args, capture_output=False, text=True)
+            else:
+                # 使用subprocess运行程序
+                result = subprocess.run([found_path] + run_args, capture_output=False, text=True)
+            
+            # 如果程序返回非零退出码，显示警告
+            if result.returncode != 0:
+                print(f"[INFO] 程序返回码: {result.returncode}")
+                
+        except PermissionError:
+            # 抛出异常，让调用者处理
+            raise PythonCMDError(ErrorCodes.PERMISSION_DENIED, f"没有权限执行文件: {found_path}",
+                               "请检查文件权限或使用管理员权限运行")
+        except FileNotFoundError:
+            # 抛出异常，让调用者处理
+            raise PythonCMDError(ErrorCodes.FILE_NOT_FOUND, f"无法执行文件: {found_path}",
+                               "文件可能不存在或不是有效的可执行文件")
+        except Exception as e:
+            # 抛出异常，让调用者处理
+            raise PythonCMDError(ErrorCodes.COMMAND_EXECUTION_FAILED, f"执行文件失败: {found_path}", str(e))
+    
+    def cd(self, directory=None):
+        """切换工作目录"""
+        if directory is None:
+            # 如果没有指定目录，显示当前目录
+            current_dir = os.getcwd()
+            print(f"当前目录: {current_dir}")
+            return
+        
+        try:
+            # 尝试切换目录
+            os.chdir(directory)
+            new_dir = os.getcwd()
+            print(f"已切换到目录: {new_dir}")
+        except FileNotFoundError:
+            raise_filesystem_error(ErrorCodes.DIRECTORY_NOT_FOUND, f"目录不存在: {directory}", "请检查路径是否正确")
+        except PermissionError:
+            raise_permission_error(ErrorCodes.DIRECTORY_ACCESS_DENIED, f"无法访问目录: {directory}", "权限不足")
+        except Exception as e:
+            raise_filesystem_error(ErrorCodes.FILE_ACCESS_DENIED, f"无法切换到目录: {directory}", str(e))
+    
+    def cat(self, *files):
+        """显示文件内容（类似Linux cat命令）"""
+        if not files:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要显示的文件", "cat命令需要至少一个文件名")
+            return
+        
+        for file_path in files:
+            try:
+                # 检查文件是否存在
+                if not os.path.exists(file_path):
+                    raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件不存在: {file_path}", "请检查文件路径")
+                    continue
+                
+                # 检查是否是文件
+                if not os.path.isfile(file_path):
+                    raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file_path}", "cat命令只能显示普通文件内容")
+                    continue
+                
+                # 尝试读取文件内容
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        print(content, end='')  # 保持文件原有的换行格式
+                        
+                        # 如果文件末尾没有换行符，添加一个
+                        if content and not content.endswith('\n'):
+                            print()
+                except UnicodeDecodeError:
+                    # 如果UTF-8解码失败，尝试使用其他编码
+                    try:
+                        with open(file_path, 'r', encoding='gbk') as f:
+                            content = f.read()
+                            print(content, end='')
+                            if content and not content.endswith('\n'):
+                                print()
+                    except Exception:
+                        # 如果还是失败，尝试以二进制模式读取并显示部分信息
+                        raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"无法读取文件: {file_path}", "文件可能不是文本文件或编码不支持")
+                        continue
+                except Exception as e:
+                    raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取文件失败: {file_path}", str(e))
+                    continue
+                    
+            except PythonCMDError as e:
+                # 捕获并显示错误，但继续处理下一个文件
+                error_manager.log_error(e.code, e.message, e.details)
+                formatted_msg = error_manager.format_error_message(e.code, e.message, e.details)
+                print(formatted_msg)
+                continue
+            except Exception as e:
+                error_manager.log_error(ErrorCodes.FILE_READ_ERROR, f"处理文件失败: {file_path}", str(e))
+                formatted_msg = error_manager.format_error_message(ErrorCodes.FILE_READ_ERROR, f"处理文件失败: {file_path}", str(e))
+                print(formatted_msg)
+                continue
+    
+    def mkdir(self, *dirs):
+        """创建目录（类似Linux mkdir命令）"""
+        if not dirs:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要创建的目录", "mkdir命令需要至少一个目录名")
+            return
+        
+        for dir_path in dirs:
+            try:
+                if os.path.exists(dir_path):
+                    raise_filesystem_error(ErrorCodes.DIRECTORY_EXISTS, f"目录已存在: {dir_path}", "无法创建已存在的目录")
+                    continue
+                
+                os.makedirs(dir_path)
+                print(f"已创建目录: {dir_path}")
+            except Exception as e:
+                raise_filesystem_error(ErrorCodes.DIRECTORY_CREATE_ERROR, f"创建目录失败: {dir_path}", str(e))
+                continue
+    
+    def rm(self, *paths):
+        """删除文件或目录（类似Linux rm命令）"""
+        if not paths:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要删除的文件或目录", "rm命令需要至少一个路径")
+            return
+        
+        for path in paths:
+            try:
+                if not os.path.exists(path):
+                    raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件或目录不存在: {path}", "无法删除不存在的项目")
+                    continue
+                
+                if os.path.isfile(path):
+                    os.remove(path)
+                    print(f"已删除文件: {path}")
+                elif os.path.isdir(path):
+                    import shutil
+                    shutil.rmtree(path)
+                    print(f"已删除目录: {path}")
+            except Exception as e:
+                raise_filesystem_error(ErrorCodes.FILE_DELETE_ERROR, f"删除失败: {path}", str(e))
+                continue
+    
+    def touch(self, *files):
+        """创建空文件或更新时间戳（类似Linux touch命令）"""
+        if not files:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要创建的文件", "touch命令需要至少一个文件名")
+            return
+        
+        for file_path in files:
+            try:
+                if os.path.exists(file_path):
+                    # 文件存在，更新修改时间
+                    os.utime(file_path, None)
+                    print(f"已更新时间戳: {file_path}")
+                else:
+                    # 文件不存在，创建空文件
+                    with open(file_path, 'w') as f:
+                        pass
+                    print(f"已创建文件: {file_path}")
+            except Exception as e:
+                raise_filesystem_error(ErrorCodes.FILE_CREATE_ERROR, f"操作失败: {file_path}", str(e))
+                continue
+    
+    def pwd(self):
+        """显示当前工作目录（类似Linux pwd命令）"""
+        current_dir = os.getcwd()
+        print(current_dir)
+    
+    def whoami(self):
+        """显示当前用户（类似Linux whoami命令）"""
+        import getpass
+        username = getpass.getuser()
+        print(username)
+    
+    def which(self, command):
+        """显示命令位置（类似Linux which命令）"""
+        if not command:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要查找的命令", "which命令需要指定命令名")
+            return
+        
+        # 首先检查内置命令
+        if command in self.command_map:
+            print(f"{command}: 内置命令")
+            return
+        
+        # 在PATH中查找
+        path_dirs = os.environ.get('PATH', '').split(os.pathsep)
+        found = False
+        
+        for directory in path_dirs:
+            directory = directory.strip('"')
+            if directory and os.path.exists(directory):
+                # 尝试不同的扩展名
+                extensions = ['', '.exe', '.com', '.bat', '.cmd']
+                for ext in extensions:
+                    full_path = os.path.join(directory, command + ext)
+                    if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
+                        print(f"{command}: {full_path}")
+                        found = True
+                        break
+                if found:
+                    break
+        
+        if not found:
+            raise_command_error(ErrorCodes.COMMAND_NOT_FOUND, f"未找到命令: {command}", "命令不存在于PATH中")
+    
+    def grep(self, pattern, file):
+        """搜索文本模式（类似Linux grep命令）"""
+        if not pattern or not file:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请提供搜索模式和文件名", "grep命令需要模式和文件名")
+            return
+        
+        try:
+            if not os.path.exists(file):
+                raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件不存在: {file}", "请检查文件路径")
+                return
+            
+            if not os.path.isfile(file):
+                raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file}", "grep命令只能搜索普通文件")
+                return
+            
+            with open(file, 'r', encoding='utf-8') as f:
+                line_num = 0
+                for line in f:
+                    line_num += 1
+                    if pattern in line:
+                        print(f"{line_num}:{line.rstrip()}")
+        except UnicodeDecodeError:
+            try:
+                with open(file, 'r', encoding='gbk') as f:
+                    line_num = 0
+                    for line in f:
+                        line_num += 1
+                        if pattern in line:
+                            print(f"{line_num}:{line.rstrip()}")
+            except Exception as e:
+                raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"无法读取文件: {file}", str(e))
+        except Exception as e:
+            raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"搜索失败: {file}", str(e))
+    
+    def head(self, file, lines=10):
+        """显示文件开头几行（类似Linux head命令）"""
+        if not file:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定文件名", "head命令需要文件名")
+            return
+        
+        try:
+            if not os.path.exists(file):
+                raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件不存在: {file}", "请检查文件路径")
+                return
+            
+            if not os.path.isfile(file):
+                raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file}", "head命令只能显示普通文件")
+                return
+            
+            # 确保行数是正整数
+            try:
+                lines = int(lines)
+                if lines <= 0:
+                    lines = 10
+            except (ValueError, TypeError):
+                lines = 10
+            
+            with open(file, 'r', encoding='utf-8') as f:
+                line_num = 0
+                for line in f:
+                    line_num += 1
+                    if line_num > lines:
+                        break
+                    print(line.rstrip())
+        except UnicodeDecodeError:
+            try:
+                with open(file, 'r', encoding='gbk') as f:
+                    line_num = 0
+                    for line in f:
+                        line_num += 1
+                        if line_num > lines:
+                            break
+                        print(line.rstrip())
+            except Exception as e:
+                raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"无法读取文件: {file}", str(e))
+        except Exception as e:
+            raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取失败: {file}", str(e))
+    
+    def tail(self, file, lines=10):
+        """显示文件末尾几行（类似Linux tail命令）"""
+        if not file:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定文件名", "tail命令需要文件名")
+            return
+        
+        try:
+            if not os.path.exists(file):
+                raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件不存在: {file}", "请检查文件路径")
+                return
+            
+            if not os.path.isfile(file):
+                raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file}", "tail命令只能显示普通文件")
+                return
+            
+            # 确保行数是正整数
+            try:
+                lines = int(lines)
+                if lines <= 0:
+                    lines = 10
+            except (ValueError, TypeError):
+                lines = 10
+            
+            # 读取文件所有行，然后显示最后几行
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    all_lines = f.readlines()
+            except UnicodeDecodeError:
+                with open(file, 'r', encoding='gbk') as f:
+                    all_lines = f.readlines()
+            
+            # 显示最后几行
+            start_line = max(0, len(all_lines) - lines)
+            for i in range(start_line, len(all_lines)):
+                print(all_lines[i].rstrip())
+                
+        except Exception as e:
+            raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取失败: {file}", str(e))
+    
+    def wc(self, *files):
+        """统计文件信息（类似Linux wc命令）"""
+        if not files:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要统计的文件", "wc命令需要至少一个文件名")
+            return
+        
+        total_lines = total_words = total_chars = 0
+        
+        for file_path in files:
+            try:
+                if not os.path.exists(file_path):
+                    raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件不存在: {file_path}", "请检查文件路径")
+                    continue
+                
+                if not os.path.isfile(file_path):
+                    raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file_path}", "wc命令只能统计普通文件")
+                    continue
+                
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    with open(file_path, 'r', encoding='gbk') as f:
+                        content = f.read()
+                
+                lines = len(content.splitlines())
+                words = len(content.split())
+                chars = len(content)
+                
+                print(f"{lines:8}{words:8}{chars:8} {file_path}")
+                
+                total_lines += lines
+                total_words += words
+                total_chars += chars
+                
+            except Exception as e:
+                error_manager.log_error(ErrorCodes.FILE_READ_ERROR, f"统计失败: {file_path}", str(e))
+                continue
+        
+        # 如果是多个文件，显示总计
+        if len(files) > 1:
+            print(f"{total_lines:8}{total_words:8}{total_chars:8} 总计")
+
 class CommandExecutor:
     """命令执行器"""
     
@@ -326,6 +797,83 @@ class CommandExecutor:
         
         # 命令实例（传递self引用）
         self.commands_instance = Commands(self)
+    
+    def find_similar_commands(self, input_cmd):
+        """查找相似的命令"""
+        if not input_cmd:
+            return []
+        
+        # 获取所有可用命令
+        available_commands = list(self.command_map.keys())
+        
+        # 添加PATH中的可执行文件
+        path_dirs = os.environ.get('PATH', '').split(os.pathsep)
+        path_executables = []
+        common_exe_extensions = ['.exe', '.com', '.bat', '.cmd', '.vbs', '.js', '.ps1']
+        
+        for directory in path_dirs:
+            directory = directory.strip('"')
+            if directory and os.path.exists(directory):
+                try:
+                    for item in os.listdir(directory):
+                        # 更严格的可执行文件判断
+                        if (not item.startswith('.') and
+                            len(item) > 2 and  # 排除单字符和双字符文件
+                            os.path.isfile(os.path.join(directory, item))):  # 确保是普通文件
+                            
+                            # 检查扩展名或没有扩展名（可能是可执行文件）
+                            has_exe_extension = any(item.lower().endswith(ext) for ext in common_exe_extensions)
+                            has_no_extension = '.' not in item
+                            
+                            if has_exe_extension or has_no_extension:
+                                # 移除扩展名，只保留基本名称用于匹配
+                                base_name = item
+                                if has_exe_extension:
+                                    for ext in common_exe_extensions:
+                                        if item.lower().endswith(ext):
+                                            base_name = item[:-len(ext)]
+                                            break
+                                path_executables.append(base_name)
+                except (OSError, PermissionError):
+                    continue
+        
+        # 去重
+        path_executables = list(set(path_executables))
+        
+        all_commands = available_commands + path_executables
+        
+        # 计算编辑距离（Levenshtein距离）
+        def levenshtein_distance(s1, s2):
+            if len(s1) < len(s2):
+                return levenshtein_distance(s2, s1)
+            
+            if len(s2) == 0:
+                return len(s1)
+            
+            previous_row = range(len(s2) + 1)
+            for i, c1 in enumerate(s1):
+                current_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = previous_row[j + 1] + 1
+                    deletions = current_row[j] + 1
+                    substitutions = previous_row[j] + (c1 != c2)
+                    current_row.append(min(insertions, deletions, substitutions))
+                previous_row = current_row
+            
+            return previous_row[-1]
+        
+        # 计算相似度并排序
+        similar_commands = []
+        for cmd in all_commands:
+            distance = levenshtein_distance(input_cmd.lower(), cmd.lower())
+            if distance <= 2:  # 编辑距离小于等于2
+                similar_commands.append((cmd, distance))
+        
+        # 按距离排序
+        similar_commands.sort(key=lambda x: x[1])
+        
+        # 返回最相似的命令（最多3个）
+        return [cmd for cmd, distance in similar_commands[:3]]
     
     def parse_arguments(self, param_config, input_params):
         """智能参数解析器"""
@@ -376,14 +924,97 @@ class CommandExecutor:
         params_str = parts[1] if len(parts) > 1 else ""
         
         if cmd_name not in self.command_map:
-            error_manager.log_error(ErrorCodes.COMMAND_NOT_FOUND, f"未知命令: {cmd_name}")
-            error_msg = error_manager.format_error_message(
-                ErrorCodes.COMMAND_NOT_FOUND,
-                f"未知命令: {cmd_name}",
-                f"请使用 'help' 命令查看可用命令列表"
-            )
-            print(error_msg)
-            return
+            # 如果命令不在配置中，尝试作为可执行文件运行
+            # 首先检查是否使用了相对路径前缀
+            is_relative_path = cmd_name.startswith('./') or cmd_name.startswith('.\\')
+            
+            # 检查当前目录是否存在该文件（用于提供友好提示）
+            import os
+            import platform
+            
+            # 定义支持的可执行文件扩展名
+            executable_extensions = ['.exe', '.com', '.bat', '.cmd']
+            python_extensions = ['.py', '.pyw']
+            if platform.system() != 'Windows':
+                executable_extensions.append('')
+            
+            def check_current_directory(file_name):
+                """检查当前目录是否存在该文件"""
+                # 尝试直接查找
+                if os.path.exists(file_name) and os.path.isfile(file_name):
+                    return True
+                
+                # 如果没有扩展名，尝试添加可能的扩展名
+                if platform.system() == 'Windows':
+                    all_extensions = executable_extensions + python_extensions
+                    if not any(file_name.lower().endswith(ext) for ext in all_extensions):
+                        for ext in all_extensions:
+                            test_path = file_name + ext
+                            if os.path.exists(test_path) and os.path.isfile(test_path):
+                                return True
+                return False
+            
+            file_exists_in_current_dir = check_current_directory(cmd_name)
+            
+            try:
+                # 使用shlex分割参数字符串，支持引号内的空格
+                run_args = shlex.split(params_str) if params_str else []
+                self.commands_instance.run(cmd_name, *run_args)
+                return
+            except PythonCMDError as e:
+                # 根据是否使用相对路径前缀来决定错误信息
+                if is_relative_path:
+                    # 使用了相对路径前缀，显示文件相关的错误信息
+                    # 这里保持run方法中已经显示的错误信息，不再重复显示
+                    pass
+                else:
+                    # 没有使用相对路径前缀，显示命令不存在的错误
+                    error_manager.log_error(ErrorCodes.COMMAND_NOT_FOUND, f"未知命令: {cmd_name}")
+                    error_msg = error_manager.format_error_message(
+                        ErrorCodes.COMMAND_NOT_FOUND,
+                        f"未知命令: {cmd_name}",
+                        f"请使用 'help' 命令查看可用命令列表"
+                    )
+                    print(error_msg)
+                    
+                    # 查找相似的命令
+                    similar_commands = self.find_similar_commands(cmd_name)
+                    if similar_commands:
+                        if len(similar_commands) == 1:
+                            print(f"是不是指: {similar_commands[0]}")
+                        else:
+                            suggestions = " | ".join(similar_commands)
+                            print(f"是不是指: {suggestions}")
+                    
+                    # 如果文件存在于当前目录，提供额外的提示
+                    if file_exists_in_current_dir:
+                        print(f"提示: 当前目录存在文件 '{cmd_name}'，请使用 './{cmd_name}' 或 '.\\{cmd_name}' 来执行")
+                return
+            except Exception as e:
+                # 其他错误，根据是否使用相对路径前缀来决定错误信息
+                if is_relative_path:
+                    # 使用了相对路径前缀，显示系统错误
+                    error_manager.log_error(ErrorCodes.COMMAND_EXECUTION_FAILED, f"执行失败: {cmd_name}", str(e))
+                    formatted_msg = error_manager.format_error_message(
+                        ErrorCodes.COMMAND_EXECUTION_FAILED,
+                        f"执行失败: {cmd_name}",
+                        str(e)
+                    )
+                    print(formatted_msg)
+                else:
+                    # 没有使用相对路径前缀，显示命令不存在的错误
+                    error_manager.log_error(ErrorCodes.COMMAND_NOT_FOUND, f"未知命令: {cmd_name}")
+                    error_msg = error_manager.format_error_message(
+                        ErrorCodes.COMMAND_NOT_FOUND,
+                        f"未知命令: {cmd_name}",
+                        f"请使用 'help' 命令查看可用命令列表"
+                    )
+                    print(error_msg)
+                    
+                    # 如果文件存在于当前目录，提供额外的提示
+                    if file_exists_in_current_dir:
+                        print(f"提示: 当前目录存在文件 '{cmd_name}'，请使用 './{cmd_name}' 或 '.\\{cmd_name}' 来执行")
+                return
         
         config = self.command_map[cmd_name]
         
