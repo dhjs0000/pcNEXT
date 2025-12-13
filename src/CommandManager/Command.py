@@ -3,6 +3,12 @@ import json
 import re
 import shlex
 import sys
+import time
+import subprocess
+import platform
+import shutil
+import getpass
+from collections import deque
 from ..BasicManager.VersionManager import VersionManager
 from ..BasicManager.ErrorManager import (
     ErrorCodes, error_manager, PythonCMDError,
@@ -13,6 +19,15 @@ from ..BasicManager.ErrorManager import (
 
 class Commands:
     """命令实现类"""
+    
+    def _read_file(self, path, fallback_encoding='gbk'):
+        """内部工具：自动处理编码fallback的生成器"""
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                yield from f
+        except UnicodeDecodeError:
+            with open(path, 'r', encoding=fallback_encoding) as f:
+                yield from f
     
     def __init__(self, executor=None):
         """
@@ -468,29 +483,13 @@ class Commands:
                     raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file_path}", "cat命令只能显示普通文件内容")
                     continue
                 
-                # 尝试读取文件内容
+                # 使用流式读取，避免大文件内存问题
                 try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        print(content, end='')  # 保持文件原有的换行格式
-                        
-                        # 如果文件末尾没有换行符，添加一个
-                        if content and not content.endswith('\n'):
-                            print()
-                except UnicodeDecodeError:
-                    # 如果UTF-8解码失败，尝试使用其他编码
-                    try:
-                        with open(file_path, 'r', encoding='gbk') as f:
-                            content = f.read()
-                            print(content, end='')
-                            if content and not content.endswith('\n'):
-                                print()
-                    except Exception:
-                        # 如果还是失败，尝试以二进制模式读取并显示部分信息
-                        raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"无法读取文件: {file_path}", "文件可能不是文本文件或编码不支持")
-                        continue
-                except Exception as e:
-                    raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取文件失败: {file_path}", str(e))
+                    for line in self._read_file(file_path):
+                        sys.stdout.write(line)  # 比print少一次strip/add，保持原始格式
+                except Exception:
+                    # 如果还是失败，尝试以二进制模式读取并显示部分信息
+                    raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"无法读取文件: {file_path}", "文件可能不是文本文件或编码不支持")
                     continue
                     
             except PythonCMDError as e:
@@ -610,6 +609,56 @@ class Commands:
         if not found:
             raise_command_error(ErrorCodes.COMMAND_NOT_FOUND, f"未找到命令: {command}", "命令不存在于PATH中")
     
+    def _get_path_executables(self):
+        """获取PATH中的可执行文件（带缓存机制）"""
+        current_path = os.environ.get('PATH', '')
+        current_time = time.time()
+        current_path_hash = hash(current_path)
+        
+        # 检查是否需要更新缓存（PATH变化或超过5分钟）
+        should_update = (
+            not hasattr(self, '_path_cache') or not self._path_cache or  # 缓存为空
+            current_path_hash != getattr(self, '_path_env_hash', None) or  # PATH环境变化
+            (current_time - getattr(self, '_path_cache_time', 0)) > 300  # 超过5分钟
+        )
+        
+        if should_update:
+            # 更新缓存
+            self._path_cache = {}
+            self._path_env_hash = current_path_hash
+            self._path_cache_time = current_time
+            
+            path_dirs = current_path.split(os.pathsep)
+            common_exe_extensions = ['.exe', '.com', '.bat', '.cmd', '.vbs', '.js', '.ps1']
+            
+            for directory in path_dirs:
+                directory = directory.strip('"')
+                if directory and os.path.exists(directory):
+                    try:
+                        for item in os.listdir(directory):
+                            # 更严格的可执行文件判断
+                            if (not item.startswith('.') and
+                                len(item) > 2 and  # 排除单字符和双字符文件
+                                os.path.isfile(os.path.join(directory, item))):  # 确保是普通文件
+                                
+                                # 检查扩展名或没有扩展名（可能是可执行文件）
+                                has_exe_extension = any(item.lower().endswith(ext) for ext in common_exe_extensions)
+                                has_no_extension = '.' not in item
+                                
+                                if has_exe_extension or has_no_extension:
+                                    # 移除扩展名，只保留基本名称用于匹配
+                                    base_name = item
+                                    if has_exe_extension:
+                                        for ext in common_exe_extensions:
+                                            if item.lower().endswith(ext):
+                                                base_name = item[:-len(ext)]
+                                                break
+                                    self._path_cache[base_name] = os.path.join(directory, item)
+                    except (OSError, PermissionError):
+                        continue
+        
+        return list(self._path_cache.keys())
+    
     def grep(self, pattern, file):
         """搜索文本模式（类似Linux grep命令）"""
         if not pattern or not file:
@@ -667,24 +716,13 @@ class Commands:
             except (ValueError, TypeError):
                 lines = 10
             
-            with open(file, 'r', encoding='utf-8') as f:
-                line_num = 0
-                for line in f:
-                    line_num += 1
-                    if line_num > lines:
-                        break
-                    print(line.rstrip())
-        except UnicodeDecodeError:
-            try:
-                with open(file, 'r', encoding='gbk') as f:
-                    line_num = 0
-                    for line in f:
-                        line_num += 1
-                        if line_num > lines:
-                            break
-                        print(line.rstrip())
-            except Exception as e:
-                raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"无法读取文件: {file}", str(e))
+            # 使用流式读取，避免大文件内存问题
+            line_num = 0
+            for line in self._read_file(file):
+                line_num += 1
+                if line_num > lines:
+                    break
+                sys.stdout.write(line)  # 比print少一次strip/add，保持原始格式
         except Exception as e:
             raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取失败: {file}", str(e))
     
@@ -711,18 +749,14 @@ class Commands:
             except (ValueError, TypeError):
                 lines = 10
             
-            # 读取文件所有行，然后显示最后几行
-            try:
-                with open(file, 'r', encoding='utf-8') as f:
-                    all_lines = f.readlines()
-            except UnicodeDecodeError:
-                with open(file, 'r', encoding='gbk') as f:
-                    all_lines = f.readlines()
+            # 使用deque维护最后N行，避免大文件内存问题
+            last_lines = deque(maxlen=lines)
+            for line in self._read_file(file):
+                last_lines.append(line)
             
-            # 显示最后几行
-            start_line = max(0, len(all_lines) - lines)
-            for i in range(start_line, len(all_lines)):
-                print(all_lines[i].rstrip())
+            # 输出最后几行
+            for line in last_lines:
+                sys.stdout.write(line)
                 
         except Exception as e:
             raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取失败: {file}", str(e))
@@ -745,16 +779,12 @@ class Commands:
                     raise_filesystem_error(ErrorCodes.FILE_NOT_DIRECTORY, f"不是普通文件: {file_path}", "wc命令只能统计普通文件")
                     continue
                 
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    with open(file_path, 'r', encoding='gbk') as f:
-                        content = f.read()
-                
-                lines = len(content.splitlines())
-                words = len(content.split())
-                chars = len(content)
+                # 使用流式处理，避免大文件内存问题
+                lines = words = chars = 0
+                for line in self._read_file(file_path):
+                    lines += 1
+                    words += len(line.split())
+                    chars += len(line)
                 
                 print(f"{lines:8}{words:8}{chars:8} {file_path}")
                 

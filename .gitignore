@@ -1,3 +1,5 @@
 test_*
 test*.txt
 log*
+__pycache__/
+*.pyc
