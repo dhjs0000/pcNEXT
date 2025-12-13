@@ -128,15 +128,15 @@
     {
         "id": 19,
         "cmd": "head",
-        "para": ["file", "[lines]"],
-        "func": "head(file, lines=10)",
+        "para": "*argv",
+        "func": "head(*argv)",
         "info": "Display first lines of file (similar to Linux head)"
     },
     {
         "id": 20,
         "cmd": "tail",
-        "para": ["file", "[lines]"],
-        "func": "tail(file, lines=10)",
+        "para": "*argv",
+        "func": "tail(*argv)",
         "info": "Display last lines of file (similar to Linux tail)"
     },
     {

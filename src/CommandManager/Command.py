@@ -56,7 +56,30 @@ class Commands:
     
     def echo(self, *text):
         """回显所有参数（支持无限参数）"""
-        print(' '.join(map(str, text)))
+        # 检查是否包含重定向符号
+        text_list = list(text)
+        if '>' in text_list:
+            # 处理重定向
+            redirect_index = text_list.index('>')
+            if redirect_index + 1 < len(text_list):
+                # 获取重定向目标文件
+                output_file = text_list[redirect_index + 1]
+                # 获取要输出的内容
+                output_content = ' '.join(text_list[:redirect_index])
+                
+                try:
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(output_content)
+                    print(f"内容已写入: {output_file}")
+                except Exception as e:
+                    raise_filesystem_error(ErrorCodes.FILE_WRITE_ERROR, f"写入文件失败: {output_file}", str(e))
+                return
+            else:
+                # 没有指定目标文件，当作普通文本处理
+                print(' '.join(map(str, text)))
+        else:
+            # 普通回显
+            print(' '.join(map(str, text)))
     
     def add(self, a, b):
         """计算两个数字的和"""
@@ -454,8 +477,18 @@ class Commands:
             return
         
         try:
-            # 尝试切换目录
-            os.chdir(directory)
+            # 处理特殊路径
+            if directory == '..':
+                # 返回上级目录
+                parent_dir = os.path.dirname(os.getcwd())
+                os.chdir(parent_dir)
+            elif directory == '.' or directory == '':
+                # 当前目录，不做操作
+                pass
+            else:
+                # 尝试切换目录
+                os.chdir(directory)
+            
             new_dir = os.getcwd()
             print(f"已切换到目录: {new_dir}")
         except FileNotFoundError:
@@ -528,21 +561,45 @@ class Commands:
             raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要删除的文件或目录", "rm命令需要至少一个路径")
             return
         
+        # 处理选项参数
+        force = False
+        recursive = False
+        actual_paths = []
+        
         for path in paths:
+            if path == '-f':
+                force = True
+            elif path == '-r' or path == '-rf' or path == '-fr':
+                recursive = True
+                if path == '-rf' or path == '-fr':
+                    force = True
+            else:
+                actual_paths.append(path)
+        
+        if not actual_paths:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定要删除的文件或目录", "rm命令需要至少一个路径")
+            return
+        
+        for path in actual_paths:
             try:
                 if not os.path.exists(path):
-                    raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件或目录不存在: {path}", "无法删除不存在的项目")
+                    if not force:
+                        raise_filesystem_error(ErrorCodes.FILE_NOT_FOUND, f"文件或目录不存在: {path}", "无法删除不存在的项目")
                     continue
                 
                 if os.path.isfile(path):
                     os.remove(path)
                     print(f"已删除文件: {path}")
                 elif os.path.isdir(path):
-                    import shutil
-                    shutil.rmtree(path)
-                    print(f"已删除目录: {path}")
+                    if recursive:
+                        import shutil
+                        shutil.rmtree(path)
+                        print(f"已删除目录: {path}")
+                    else:
+                        raise_filesystem_error(ErrorCodes.DIRECTORY_NOT_EMPTY, f"无法删除目录: {path}", "请使用 -r 选项递归删除目录")
             except Exception as e:
-                raise_filesystem_error(ErrorCodes.FILE_DELETE_ERROR, f"删除失败: {path}", str(e))
+                if not force:
+                    raise_filesystem_error(ErrorCodes.FILE_DELETE_ERROR, f"删除失败: {path}", str(e))
                 continue
     
     def touch(self, *files):
@@ -584,7 +641,7 @@ class Commands:
             return
         
         # 首先检查内置命令
-        if command in self.command_map:
+        if hasattr(self, 'command_map') and command in self.command_map:
             print(f"{command}: 内置命令")
             return
         
@@ -599,10 +656,15 @@ class Commands:
                 extensions = ['', '.exe', '.com', '.bat', '.cmd']
                 for ext in extensions:
                     full_path = os.path.join(directory, command + ext)
-                    if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
-                        print(f"{command}: {full_path}")
-                        found = True
-                        break
+                    try:
+                        if os.path.isfile(full_path):
+                            # Windows系统不需要检查执行权限
+                            if os.name == 'nt' or os.access(full_path, os.X_OK):
+                                print(f"{command}: {full_path}")
+                                found = True
+                                break
+                    except (OSError, PermissionError):
+                        continue
                 if found:
                     break
         
@@ -693,9 +755,46 @@ class Commands:
         except Exception as e:
             raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"搜索失败: {file}", str(e))
     
-    def head(self, file, lines=10):
+    def head(self, *args):
         """显示文件开头几行（类似Linux head命令）"""
-        if not file:
+        if not args:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定文件名", "head命令需要文件名")
+            return
+        
+        # 解析参数
+        file = None
+        lines = 10
+        i = 0
+        
+        while i < len(args):
+            arg = args[i]
+            if arg == '-n' and i + 1 < len(args):
+                # -n 选项指定行数
+                try:
+                    lines = int(args[i + 1])
+                    i += 2
+                except (ValueError, IndexError):
+                    lines = 10
+                    i += 1
+            elif arg.startswith('-n') and len(arg) > 2:
+                # -n10 格式
+                try:
+                    lines = int(arg[2:])
+                    i += 1
+                except ValueError:
+                    lines = 10
+                    i += 1
+            elif not arg.startswith('-'):
+                # 文件名
+                if file is None:
+                    file = arg
+                    i += 1
+                else:
+                    i += 1
+            else:
+                i += 1
+        
+        if file is None:
             raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定文件名", "head命令需要文件名")
             return
         
@@ -709,26 +808,75 @@ class Commands:
                 return
             
             # 确保行数是正整数
-            try:
-                lines = int(lines)
-                if lines <= 0:
-                    lines = 10
-            except (ValueError, TypeError):
+            if lines <= 0:
                 lines = 10
             
             # 使用流式读取，避免大文件内存问题
             line_num = 0
-            for line in self._read_file(file):
-                line_num += 1
-                if line_num > lines:
-                    break
-                sys.stdout.write(line)  # 比print少一次strip/add，保持原始格式
+            try:
+                for line in self._read_file(file):
+                    line_num += 1
+                    if line_num > lines:
+                        break
+                    sys.stdout.write(line)  # 比print少一次strip/add，保持原始格式
+            except UnicodeDecodeError:
+                # 如果UTF-8解码失败，尝试使用GBK
+                try:
+                    with open(file, 'r', encoding='gbk') as f:
+                        line_num = 0
+                        for line in f:
+                            line_num += 1
+                            if line_num > lines:
+                                break
+                            sys.stdout.write(line)
+                except Exception as e:
+                    raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"文件编码不支持: {file}", str(e))
+                    return
+        except PythonCMDError:
+            raise  # 重新抛出PythonCMDError
         except Exception as e:
             raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取失败: {file}", str(e))
     
-    def tail(self, file, lines=10):
+    def tail(self, *args):
         """显示文件末尾几行（类似Linux tail命令）"""
-        if not file:
+        if not args:
+            raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定文件名", "tail命令需要文件名")
+            return
+        
+        # 解析参数
+        file = None
+        lines = 10
+        i = 0
+        
+        while i < len(args):
+            arg = args[i]
+            if arg == '-n' and i + 1 < len(args):
+                # -n 选项指定行数
+                try:
+                    lines = int(args[i + 1])
+                    i += 2
+                except (ValueError, IndexError):
+                    lines = 10
+                    i += 1
+            elif arg.startswith('-n') and len(arg) > 2:
+                # -n10 格式
+                try:
+                    lines = int(arg[2:])
+                    i += 1
+                except ValueError:
+                    lines = 10
+                    i += 1
+            elif not arg.startswith('-'):
+                # 文件名
+                if file is None:
+                    file = arg
+                    i += 1
+                else:
+                    i += 1
+            else:
+                i += 1
+        
+        if file is None:
             raise_argument_error(ErrorCodes.MISSING_ARGUMENT, "请指定文件名", "tail命令需要文件名")
             return
         
@@ -742,22 +890,30 @@ class Commands:
                 return
             
             # 确保行数是正整数
-            try:
-                lines = int(lines)
-                if lines <= 0:
-                    lines = 10
-            except (ValueError, TypeError):
+            if lines <= 0:
                 lines = 10
             
             # 使用deque维护最后N行，避免大文件内存问题
             last_lines = deque(maxlen=lines)
-            for line in self._read_file(file):
-                last_lines.append(line)
+            try:
+                for line in self._read_file(file):
+                    last_lines.append(line)
+            except UnicodeDecodeError:
+                # 如果UTF-8解码失败，尝试使用GBK
+                try:
+                    with open(file, 'r', encoding='gbk') as f:
+                        for line in f:
+                            last_lines.append(line)
+                except Exception as e:
+                    raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"文件编码不支持: {file}", str(e))
+                    return
             
             # 输出最后几行
             for line in last_lines:
                 sys.stdout.write(line)
                 
+        except PythonCMDError:
+            raise  # 重新抛出PythonCMDError
         except Exception as e:
             raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"读取失败: {file}", str(e))
     
@@ -781,10 +937,22 @@ class Commands:
                 
                 # 使用流式处理，避免大文件内存问题
                 lines = words = chars = 0
-                for line in self._read_file(file_path):
-                    lines += 1
-                    words += len(line.split())
-                    chars += len(line)
+                try:
+                    for line in self._read_file(file_path):
+                        lines += 1
+                        words += len(line.split())
+                        chars += len(line)
+                except UnicodeDecodeError:
+                    # 如果UTF-8解码失败，尝试使用GBK
+                    try:
+                        with open(file_path, 'r', encoding='gbk') as f:
+                            for line in f:
+                                lines += 1
+                                words += len(line.split())
+                                chars += len(line)
+                    except Exception as e:
+                        raise_filesystem_error(ErrorCodes.FILE_READ_ERROR, f"文件编码不支持: {file_path}", str(e))
+                        continue
                 
                 print(f"{lines:8}{words:8}{chars:8} {file_path}")
                 
@@ -792,6 +960,8 @@ class Commands:
                 total_words += words
                 total_chars += chars
                 
+            except PythonCMDError:
+                raise  # 重新抛出PythonCMDError
             except Exception as e:
                 error_manager.log_error(ErrorCodes.FILE_READ_ERROR, f"统计失败: {file_path}", str(e))
                 continue
@@ -947,6 +1117,15 @@ class CommandExecutor:
     def execute(self, input_str):
         """执行命令"""
         if not input_str.strip():
+            return
+        
+        # 处理命令链（&&语法）
+        if '&&' in input_str:
+            commands = input_str.split('&&')
+            for cmd in commands:
+                cmd = cmd.strip()
+                if cmd:
+                    self.execute(cmd)
             return
         
         parts = input_str.split(maxsplit=1)
